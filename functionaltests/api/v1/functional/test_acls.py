@@ -17,6 +17,7 @@ from functionaltests.api import base
 from functionaltests.api.v1.behaviors import acl_behaviors
 from functionaltests.api.v1.behaviors import container_behaviors
 from functionaltests.api.v1.behaviors import secret_behaviors
+from functionaltests.api.v1.functional import security_utils
 from functionaltests.api.v1.models import acl_models
 from functionaltests.api.v1.models import container_models
 from functionaltests.api.v1.models import secret_models
@@ -30,6 +31,8 @@ observer_a = CONF.rbac_users.observer_a
 auditor_a = CONF.rbac_users.auditor_a
 admin_b = CONF.rbac_users.admin_b
 observer_b = CONF.rbac_users.observer_b
+
+fuzzer = security_utils.Fuzzer()
 
 
 def get_rbac_only():
@@ -124,7 +127,9 @@ test_data_read_container_rbac_plus_acl = {
 
 @utils.parameterized_test_case
 class AclTestCase(base.TestCase):
+
     """Functional tests exercising ACL Features"""
+
     def setUp(self):
         super(AclTestCase, self).setUp()
         self.secret_behaviors = secret_behaviors.SecretBehaviors(self.client)
@@ -251,6 +256,165 @@ class AclTestCase(base.TestCase):
         test_model = acl_models.AclModel(**acl)
         resp = self.acl_behaviors.create_acl(
             container_ref, test_model, user_name=user_name)
+        self.assertEqual(200, resp.status_code)
+
+
+@utils.parameterized_test_case
+class AclFuzzTestCase(base.TestCase):
+
+    def setUp(self):
+        super(AclFuzzTestCase, self).setUp()
+        self.secret_behaviors = secret_behaviors.SecretBehaviors(self.client)
+        self.acl_behaviors = acl_behaviors.AclBehaviors(self.client)
+
+    def tearDown(self):
+        self.acl_behaviors.delete_all_created_acls()
+        self.secret_behaviors.delete_all_created_secrets()
+        super(AclFuzzTestCase, self).tearDown()
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_create_acl_fuzz_content_type_header(self, fuzz_type, payload):
+        secret_model = secret_models.SecretModel(
+            **get_default_secret_data())
+        secret_resp, secret_ref = self.secret_behaviors.create_secret(
+            secret_model, user_name=creator_a, admin=admin_a)
+        self.assertEqual(201, secret_resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_rbac_only())
+        headers = {
+            'Content-Type': payload.encode('utf-8')
+        }
+        resp = self.acl_behaviors.create_acl(secret_ref, model=acl_model,
+                                             extra_headers=headers,
+                                             user_name=creator_a)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
+        self.assertEqual(415, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_get_acl_fuzz_accept_header(self, fuzz_type, payload):
+        secret_model = secret_models.SecretModel(
+            **get_default_secret_data())
+        secret_resp, secret_ref = self.secret_behaviors.create_secret(
+            secret_model, user_name=creator_a, admin=admin_a)
+        self.assertEqual(201, secret_resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_rbac_only())
+        resp = self.acl_behaviors.create_acl(secret_ref, model=acl_model,
+                                             user_name=creator_a)
+        self.assertEqual(200, resp.status_code)
+
+        headers = {
+            'Accept': payload.encode('utf-8'),
+        }
+        resp = self.acl_behaviors.get_acl(secret_ref + '/acl',
+                                          user_name=creator_a,
+                                          extra_headers=headers)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
+        self.assertEqual(406, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_update_acl_fuzz_accept_header(self, fuzz_type, payload):
+        secret_model = secret_models.SecretModel(
+            **get_default_secret_data())
+        secret_resp, secret_ref = self.secret_behaviors.create_secret(
+            secret_model, user_name=creator_a, admin=admin_a)
+        self.assertEqual(201, secret_resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_rbac_only())
+        resp = self.acl_behaviors.create_acl(secret_ref, model=acl_model,
+                                             user_name=creator_a)
+        self.assertEqual(200, resp.status_code)
+
+        headers = {
+            'Accept': payload.encode('utf-8'),
+        }
+        resp = self.acl_behaviors.update_acl(secret_ref + '/acl',
+                                             model=acl_model,
+                                             user_name=creator_a,
+                                             extra_headers=headers)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
+        self.assertEqual(406, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_create_acl_fuzz_entity_ref(self, fuzz_type, payload):
+        acl_model = acl_models.AclModel(**get_rbac_only())
+        resp = self.acl_behaviors.create_acl(entity_ref=payload,
+                                             model=acl_model,
+                                             user_name=creator_a)
+        self.assertEqual(404, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_get_acl_fuzz_acl_ref(self, fuzz_type, payload):
+        secret_model = secret_models.SecretModel(
+            **get_default_secret_data())
+        secret_resp, secret_ref = self.secret_behaviors.create_secret(
+            secret_model, user_name=creator_a, admin=admin_a)
+        self.assertEqual(201, secret_resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_rbac_only())
+        resp = self.acl_behaviors.create_acl(secret_ref, model=acl_model,
+                                             user_name=creator_a)
+        self.assertEqual(200, resp.status_code)
+
+        resp = self.acl_behaviors.get_acl(acl_ref=payload, user_name=creator_a)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
+        self.assertEqual(404, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_create_acl_fuzz_readers(self, fuzz_type, payload):
+        secret_model = secret_models.SecretModel(
+            **get_default_secret_data())
+        secret_resp, secret_ref = self.secret_behaviors.create_secret(
+            secret_model, user_name=creator_a, admin=admin_a)
+        self.assertEqual(201, secret_resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_acl_only(payload))
+        resp = self.acl_behaviors.create_acl(secret_ref, model=acl_model,
+                                             user_name=creator_a)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
+        self.assertEqual(200, resp.status_code)
+
+        resp = self.acl_behaviors.get_acl(secret_ref + '/acl',
+                                          user_name=creator_a)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
+        self.assertEqual(200, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_datasets(
+        ['content_types', 'junk', 'sqli', 'rce']
+    ))
+    def test_update_acl_fuzz_readers(self, fuzz_type, payload):
+        secret_model = secret_models.SecretModel(
+            **get_default_secret_data())
+        secret_resp, secret_ref = self.secret_behaviors.create_secret(
+            secret_model, user_name=creator_a, admin=admin_a)
+        self.assertEqual(201, secret_resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_acl_only(creator_a))
+        resp = self.acl_behaviors.create_acl(secret_ref, model=acl_model,
+                                             user_name=creator_a)
+        self.assertEqual(200, resp.status_code)
+
+        acl_model = acl_models.AclModel(**get_acl_only(payload))
+        resp = self.acl_behaviors.update_acl(secret_ref + '/acl',
+                                             model=acl_model,
+                                             user_name=creator_a)
+        self.assertEqual(200, resp.status_code)
+
+        resp = self.acl_behaviors.get_acl(secret_ref + '/acl',
+                                          user_name=creator_a)
+        fuzzer.verify_response(resp, fuzz_type=fuzz_type)
         self.assertEqual(200, resp.status_code)
 
 # ----------------------- Support Functions ---------------------------
