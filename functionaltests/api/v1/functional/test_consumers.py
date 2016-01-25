@@ -16,10 +16,12 @@ import copy
 
 from testtools import testcase
 
+from barbican.tests import utils
 from functionaltests.api import base
 from functionaltests.api.v1.behaviors import consumer_behaviors
 from functionaltests.api.v1.behaviors import container_behaviors
 from functionaltests.api.v1.behaviors import secret_behaviors
+from functionaltests.api.v1.functional import security_utils
 from functionaltests.api.v1.models import consumer_model
 from functionaltests.api.v1.models import container_models
 from functionaltests.api.v1.models import secret_models
@@ -34,6 +36,21 @@ create_secret_data = {
     "payload_content_type": "application/octet-stream",
     "payload_content_encoding": "base64",
 }
+
+
+create_container_data = {
+    "name": "containername",
+    "type": "generic",
+    "secret_refs": [
+        {
+            "name": "secret1",
+        },
+        {
+            "name": "secret2",
+        }
+    ]
+}
+
 
 default_consumer_data = {
     "name": "consumername",
@@ -341,3 +358,112 @@ class ConsumersUnauthedTestCase(ConsumersBaseTestCase):
         )
 
         self.assertEqual(401, resp.status_code)
+
+fuzzer = security_utils.FuzzFactory()
+
+
+@utils.parameterized_test_case
+class ConsumerFuzzTestCase(base.TestCase):
+    default_data = default_consumer_data
+
+    def _create_a_secret(self):
+        secret_model = secret_models.SecretModel(**create_secret_data)
+        resp, secret_ref = self.secret_behaviors.create_secret(secret_model)
+        self.assertEqual(resp.status_code, 201)
+        self.assertIsNotNone(secret_ref)
+
+        return secret_ref
+
+    def setUp(self):
+        super(ConsumersBaseTestCase, self).setUp()
+        self.secret_behaviors = secret_behaviors.SecretBehaviors(self.client)
+        self.container_behaviors = container_behaviors.ContainerBehaviors(
+            self.client
+        )
+        self.consumer_behaviors = consumer_behaviors.ConsumerBehaviors(
+            self.client
+        )
+
+        self.consumer_data = copy.deepcopy(default_consumer_data)
+
+        self.generic_container_ref = self._create_populated_generic_container()
+
+    @utils.parameterized_dataset(fuzzer.get_param_datasets(
+        ['offset', 'limit'],
+        ['number', 'junk', 'sqli', 'rce']
+    ))
+    @testcase.attr('negative', 'security')
+    def test_consumer_get_consumer_list_fuzz(
+            self, parameter, fuzz_type, payload):
+        """Attempt to get list of consumers using fuzz payload as URL params
+
+        Should return non-500 status code
+        """
+        kwargs = {parameter: payload}
+        resp, consumers, next_ref, prev_ref = self.behaviors.get_consumers(
+            self.generic_container_ref, **kwargs
+        )
+        self.assertTrue(fuzzer.verify_response(resp, fuzz_type=fuzz_type))
+        self.assertNotIn(resp.status_code, range(500, 600))
+
+    @utils.parameterized_dataset(fuzzer.get_param_datasets(
+        ['Content-Type', 'Accept'],
+        ['content_types', 'huge', 'junk', 'sqli', 'rce']
+    ))
+    @testcase.attr('negative', 'security')
+    def test_consumer_create_fuzz_header(self, parameter, fuzz_type, payload):
+        """Attempt to create a container with fuzz payload as Content-Type header
+
+        Should return 406/415
+        """
+        model = consumer_model.ConsumerModel(**self.consumer_data)
+        headers = {
+            parameter: payload.encode('utf-8')
+        }
+        resp, consumer_dat = self.consumer_behaviors.create_consumer(
+            model, self.generic_container_ref, headers=headers
+        )
+        self.assertTrue(fuzzer.verify_response(resp, fuzz_type))
+        if parameter == 'Content-Type':
+            self.assertEqual(415, resp.status_code)
+        elif parameter == 'Accept':
+            self.assertEqual(406, resp.status_code)
+
+    @utils.parameterized_dataset(fuzzer.get_param_datasets(
+        ['name', 'url'],
+        ['content_types', 'date', 'junk', 'number', 'sqli', 'rce', 'traversal',
+            'url']
+    ))
+    @testcase.attr('negative', 'security')
+    def test_consumer_create_fuzz(self, parameter, fuzz_type, payload):
+        """Attempt consumer creation and retrieval with fuzz payload as params
+
+        Should return non-5XX
+        """
+        model = consumer_model.ConsumerModel(
+            **create_container_data
+        )
+        model.__dict__[parameter] = payload
+
+        resp, consumer_ref = self.behaviors.create_consumer(model)
+        self.assertTrue(fuzzer.verify_response(resp, fuzz_type))
+
+    @utils.parameterized_dataset(fuzzer.get_param_datasets(
+        ['name', 'url'],
+        ['content_types', 'date', 'junk', 'number', 'sqli', 'rce', 'traversal',
+            'url']
+    ))
+    @testcase.attr('negative', 'security')
+    def test_consumer_delete_fuzz(self, parameter, fuzz_type, payload):
+        """Attempt consumer deletion with fuzz payload as params
+
+        Should return non-5XX
+        """
+        model = consumer_model.ConsumerModel(
+            **create_container_data
+        )
+        model.__dict__[parameter] = payload
+
+        resp, consumer_dat = self.consumer_behaviors.delete(
+            model, self.generic_container_ref)
+        self.assertTrue(fuzzer.verify_response(resp, fuzz_type))
